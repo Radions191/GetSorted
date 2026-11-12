@@ -1,304 +1,181 @@
-
-import { useEffect, useState } from "react";
-import axios from "axios";
-import {
-  AlertTriangle,
-  Newspaper,
-  Clock,
-  CalendarDays,
-  MessageCircle,
-  ExternalLink,
-  TrendingUp,
-  Activity,
-  Radio,
-} from "lucide-react";
+import { useState, type FormEvent } from "react";
 import { useLanguage } from "../context/LanguageContext";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3001";
+const storageKey = "getsorted-notes-v1";
+const statuses = ["issue", "planned", "resolved"] as const;
+type Status = (typeof statuses)[number];
+type Filter = "all" | Status;
 
-interface NewsItem {
-  id: number;
+interface Note {
+  id: string;
   title: string;
-  by: string;
-  time: number;
-  url?: string;
-  score: number;
-  descendants?: number;
+  body: string;
+  status: Status;
+  updatedAt: string;
 }
 
-interface Melding {
-  id: number;
-  tittel: string;
-  melding: string;
-  createdAt: string;
+const copy = {
+  no: { board: "Arbeidsnotater", local: "Notatene lagres i denne nettleseren.", add: "Legg til notat", status: "Status", all: "Alle", issue: "Problem", planned: "Planlagt", resolved: "Løst", empty: "Ingen notater i denne visningen.", failed: "Kunne ikke åpne de lagrede notatene." },
+  en: { board: "Work notes", local: "Notes are saved in this browser.", add: "Add note", status: "Status", all: "All", issue: "Issue", planned: "Planned", resolved: "Resolved", empty: "No notes in this view.", failed: "Could not open saved notes." },
+  ru: { board: "Рабочие заметки", local: "Заметки сохраняются в этом браузере.", add: "Добавить заметку", status: "Статус", all: "Все", issue: "Проблема", planned: "Запланировано", resolved: "Решено", empty: "Здесь пока нет заметок.", failed: "Не удалось открыть сохранённые заметки." },
+  uk: { board: "Робочі нотатки", local: "Нотатки зберігаються в цьому браузері.", add: "Додати нотатку", status: "Статус", all: "Усі", issue: "Проблема", planned: "Заплановано", resolved: "Вирішено", empty: "Тут поки немає нотаток.", failed: "Не вдалося відкрити збережені нотатки." },
+};
+
+const locale = { no: "nb-NO", en: "en-GB", ru: "ru-RU", uk: "uk-UA" };
+const emptyDraft = { id: "", title: "", body: "", status: "issue" as Status };
+
+function isStatus(value: unknown): value is Status {
+  return statuses.some((status) => status === value);
 }
 
-const localeMap = {
-  no: "no-NO",
-  en: "en-GB",
-  ru: "ru-RU",
-  uk: "uk-UA",
-} as const;
+function isNote(value: unknown): value is Note {
+  if (typeof value !== "object" || value === null) return false;
+  const note = value as Partial<Note>;
+  return typeof note.id === "string" &&
+    typeof note.title === "string" &&
+    typeof note.body === "string" &&
+    isStatus(note.status) &&
+    typeof note.updatedAt === "string" &&
+    Number.isFinite(Date.parse(note.updatedAt));
+}
+
+function readNotes(): Note[] {
+  const raw = localStorage.getItem(storageKey);
+  if (raw === null) return [];
+  const value: unknown = JSON.parse(raw);
+  if (Array.isArray(value) && value.every(isNote)) return value;
+  throw new Error("Invalid saved notes");
+}
+
+function loadNotes(): Note[] | null {
+  try {
+    return readNotes();
+  } catch {
+    return null;
+  }
+}
 
 export function InfoScreen() {
   const { language, t } = useLanguage();
+  const labels = copy[language];
+  const [notes, setNotes] = useState(loadNotes);
+  const [filter, setFilter] = useState<Filter>("all");
+  const [draft, setDraft] = useState<typeof emptyDraft | null>(null);
+  const [error, setError] = useState<"fillFields" | "saveError" | null>(null);
+  const visible = notes?.filter((note) => filter === "all" || note.status === filter);
 
-  const [news, setNews] = useState<NewsItem[]>([]);
-  const [meldinger, setMeldinger] = useState<Melding[]>([]);
-  const [time, setTime] = useState(new Date());
-  const [newsLoading, setNewsLoading] = useState(true);
-  const [messagesLoading, setMessagesLoading] = useState(true);
+  function openDraft(note = emptyDraft) {
+    setError(null);
+    setDraft(note);
+  }
 
-  const locale = localeMap[language];
+  function saveNote(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!draft) return;
 
-  useEffect(() => {
-    axios
-      .get(`${API_URL}/api/news`)
-      .then((response) => {
-        setNews(
-          Array.isArray(response.data)
-            ? response.data.filter(Boolean)
-            : []
-        );
-      })
-      .catch((error) => {
-        console.error("News loading error:", error);
-        setNews([]);
-      })
-      .finally(() => setNewsLoading(false));
+    const title = draft.title.trim();
+    const body = draft.body.trim();
+    if (!title || !body) {
+      setError("fillFields");
+      return;
+    }
 
-    axios
-      .get(`${API_URL}/api/driftsmeldinger`)
-      .then((response) => {
-        setMeldinger(
-          Array.isArray(response.data) ? response.data : []
-        );
-      })
-      .catch((error) => {
-        console.error("Driftsmeldinger loading error:", error);
-        setMeldinger([]);
-      })
-      .finally(() => setMessagesLoading(false));
-
-    const interval = setInterval(() => {
-      setTime(new Date());
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, []);
+    try {
+      const note = {
+        ...draft,
+        id: draft.id || crypto.randomUUID(),
+        title,
+        body,
+        updatedAt: new Date().toISOString(),
+      };
+      const next = [note, ...readNotes().filter((entry) => entry.id !== note.id)];
+      localStorage.setItem(storageKey, JSON.stringify(next));
+      setNotes(next);
+      setFilter("all");
+      setDraft(null);
+      setError(null);
+    } catch {
+      setError("saveError");
+    }
+  }
 
   return (
     <main className="page-container animate-fade-in">
       <section className="hero-section">
         <div className="hero-content">
-          <div className="eyebrow">
-            <span className="status-dot" />
-            {t("liveInformation")}
-          </div>
-
-          <h1>
-            {t("welcome")} <span className="gradient-text">GetSorted.</span>
-          </h1>
-
-          <p className="hero-description">
-            {t("heroDescription")}
-          </p>
-
-          <div className="hero-meta">
-            <span>
-              <Activity size={15} />
-              {t("systemOverview")}
-            </span>
-            <span>
-              <Radio size={15} />
-              {t("liveDashboard")}
-            </span>
-          </div>
-        </div>
-
-        <div className="clock-card glass">
-          <div className="clock-top">
-            <span className="clock-label">{t("currentTime")}</span>
-            <Clock size={18} />
-          </div>
-
-          <div className="clock-time">
-            {time.toLocaleTimeString(locale)}
-          </div>
-
-          <div className="clock-date">
-            <CalendarDays size={15} />
-            {time.toLocaleDateString(locale, {
-              weekday: "long",
-              year: "numeric",
-              month: "long",
-              day: "numeric",
-            })}
-          </div>
-        </div>
-      </section>
-
-      <section className="dashboard-stats">
-        <div className="stat-card glass">
-          <div className="stat-icon warning-icon">
-            <AlertTriangle size={20} />
-          </div>
-          <div>
-            <span className="stat-label">{t("operationalMessages")}</span>
-            <strong>{meldinger.length}</strong>
-          </div>
-          <span className="stat-caption">{t("importantInformation")}</span>
-        </div>
-
-        <div className="stat-card glass">
-          <div className="stat-icon news-icon">
-            <Newspaper size={20} />
-          </div>
-          <div>
-            <span className="stat-label">{t("news")}</span>
-            <strong>{news.length}</strong>
-          </div>
-          <span className="stat-caption">{t("latestStories")}</span>
-        </div>
-
-        <div className="stat-card glass">
-          <div className="stat-icon live-icon">
-            <Radio size={20} />
-          </div>
-          <div>
-            <span className="stat-label">{t("status")}</span>
-            <strong className="online-status">{t("online")}</strong>
-          </div>
-          <span className="stat-caption">{t("dashboardActive")}</span>
-        </div>
-      </section>
-
-      <section className="content-grid">
-        <div className="content-section">
-          <div className="section-heading">
-            <div className="section-heading-icon warning-icon">
-              <AlertTriangle size={21} />
-            </div>
-            <div>
-              <h2>{t("operationalMessages")}</h2>
-              <p>{t("importantInformation")}</p>
-            </div>
-            <span className="section-count">{meldinger.length}</span>
-          </div>
-
-          {messagesLoading ? (
-            <div className="empty-state glass">
-              <div className="loading-spinner" />
-              <p>{t("loadingMessages")}</p>
-            </div>
-          ) : meldinger.length === 0 ? (
-            <div className="empty-state glass">
-              <div className="empty-icon success-icon">
-                <Activity size={25} />
-              </div>
-              <h3>{t("everythingWorks")}</h3>
-              <p>{t("noActiveMessages")}</p>
-            </div>
-          ) : (
-            <div className="message-list">
-              {meldinger.map((m) => (
-                <article className="message-card glass" key={m.id}>
-                  <div className="message-card-top">
-                    <span className="message-badge">
-                      <AlertTriangle size={13} />
-                      {t("operationalMessage")}
-                    </span>
-                    <span className="message-date">
-                      {new Date(m.createdAt).toLocaleDateString(locale)}
-                    </span>
-                  </div>
-
-                  <h3>{m.tittel}</h3>
-                  <p>{m.melding}</p>
-                </article>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="content-section">
-          <div className="section-heading">
-            <div className="section-heading-icon news-icon">
-              <Newspaper size={21} />
-            </div>
-            <div>
-              <h2>{t("news")}</h2>
-              <p>{t("latestTechnologyNews")}</p>
-            </div>
-            <span className="section-count">{news.length}</span>
-          </div>
-
-          {newsLoading ? (
-            <div className="empty-state glass">
-              <div className="loading-spinner" />
-              <p>{t("loadingNews")}</p>
-            </div>
-          ) : news.length === 0 ? (
-            <div className="empty-state glass">
-              <div className="empty-icon">
-                <Newspaper size={25} />
-              </div>
-              <h3>{t("noNews")}</h3>
-              <p>{t("newsWillAppear")}</p>
-            </div>
-          ) : (
-            <div className="news-list">
-              {news.map((n) => (
-                <article className="news-card glass" key={n.id}>
-                  <div className="news-card-top">
-                    <span className="news-source">
-                      <TrendingUp size={14} />
-                      HACKER NEWS
-                    </span>
-                    <span className="news-score">
-                      {n.score} {t("points")}
-                    </span>
-                  </div>
-
-                  <h3>{n.title}</h3>
-
-                  <p className="news-author">
-                    {t("author")} <strong>{n.by}</strong>
-                  </p>
-
-                  <div className="news-footer">
-                    <span>
-                      <CalendarDays size={14} />
-                      {new Date(n.time * 1000).toLocaleDateString(locale)}
-                    </span>
-                    <span>
-                      <MessageCircle size={14} />
-                      {n.descendants ?? 0} {t("comments")}
-                    </span>
-                  </div>
-
-                  {n.url && (
-                    <a
-                      className="news-link"
-                      href={n.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      {t("readArticle")}
-                      <ExternalLink size={15} />
-                    </a>
-                  )}
-                </article>
-              ))}
-            </div>
+          <h1>{labels.board}</h1>
+          <p className="hero-description">{labels.local}</p>
+          {notes && !draft && (
+            <button type="button" className="primary-button" onClick={() => openDraft()}>
+              {labels.add}
+            </button>
           )}
         </div>
       </section>
 
-      <footer className="dashboard-footer">
-        <span>© {time.getFullYear()} GetSorted AS</span>
-        <span>{t("poweredBy")}</span>
-      </footer>
+      {notes === null && <p role="alert">{labels.failed}</p>}
+      {draft && (
+        <section className="admin-form-section glass">
+          <h2>{draft.id ? t("edit") : labels.add}</h2>
+          <form className="admin-form" onSubmit={saveNote}>
+            <label htmlFor="note-title">{t("title")}</label>
+            <input id="note-title" value={draft.title} required maxLength={120}
+              onChange={(event) => setDraft({ ...draft, title: event.target.value })} />
+            <label htmlFor="note-body">{t("message")}</label>
+            <textarea id="note-body" value={draft.body} required maxLength={3000}
+              onChange={(event) => setDraft({ ...draft, body: event.target.value })} />
+            <label htmlFor="note-status">{labels.status}</label>
+            <select id="note-status" className="secondary-button" value={draft.status}
+              onChange={(event) => {
+                const status = event.target.value;
+                if (isStatus(status)) setDraft({ ...draft, status });
+              }}>
+              {statuses.map((status) => <option key={status} value={status}>{labels[status]}</option>)}
+            </select>
+            {error && <p role="alert" className="form-error">{t(error)}</p>}
+            <div className="form-actions">
+              <button type="submit" className="primary-button">{t("saveChanges")}</button>
+              <button type="button" className="secondary-button" onClick={() => setDraft(null)}>
+                {t("cancel")}
+              </button>
+            </div>
+          </form>
+        </section>
+      )}
+
+      {visible && (
+        <section className="message-list" aria-label={labels.board}>
+          <div className="form-actions" role="group" aria-label={labels.status} style={{ flexWrap: "wrap" }}>
+            {(["all", ...statuses] as const).map((status) => (
+              <button key={status} type="button" aria-pressed={filter === status}
+                className={filter === status ? "primary-button" : "secondary-button"}
+                onClick={() => setFilter(status)}>
+                {labels[status]}
+              </button>
+            ))}
+          </div>
+          {visible.length === 0 && <p className="empty-state">{labels.empty}</p>}
+          {visible.map((note) => (
+            <article className="message-card glass" key={note.id}>
+              <div className="message-card-top">
+                <span className="message-badge">{labels[note.status]}</span>
+                <time className="message-date" dateTime={note.updatedAt}>
+                  {new Date(note.updatedAt).toLocaleString(locale[language], {
+                    dateStyle: "medium",
+                    timeStyle: "short",
+                  })}
+                </time>
+              </div>
+              <h3 style={{ overflowWrap: "anywhere" }}>{note.title}</h3>
+              <p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{note.body}</p>
+              <button type="button" className="edit-button" disabled={draft !== null}
+                onClick={() => openDraft(note)}>
+                {t("edit")}
+              </button>
+            </article>
+          ))}
+        </section>
+      )}
     </main>
   );
 }
